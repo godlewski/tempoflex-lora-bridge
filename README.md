@@ -1,5 +1,11 @@
 # TempoFlex LoRa Bridge
 
+> [!CAUTION]
+> **Use at your own risk.** This is a hobby project shared as-is, with no warranty of any kind. I am
+> not responsible for any damage, injury, voided warranty or other loss that results from using
+> this code, these instructions or the hardware described here. You alone are responsible for how
+> you build and use it. See the [license](LICENSE).
+
 **Control a Mr. Steam steam shower from Home Assistant** by speaking the TempoFlex remote's radio
 protocol with a $25 ESP32 LoRa board running ESPHome. No cloud, no app, and no wiring into the
 steam generator.
