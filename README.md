@@ -7,7 +7,7 @@
 > you build and use it. See the [license](LICENSE).
 
 **Control a Mr. Steam steam shower from Home Assistant** by speaking the TempoFlex remote's radio
-protocol with a $25 ESP32 LoRa board running ESPHome. No cloud, no app, and no wiring into the
+protocol with an inexpensive ESP32 LoRa board running ESPHome. No cloud, no app, and no wiring into the
 steam generator.
 
 - **Preheat from Home Assistant.** Turn the steam on from your phone, a dashboard or an automation.
@@ -43,7 +43,7 @@ steam generator.
 If your remote has that FCC ID (it's on the label on the back), this should work. Other Mr. Steam
 remotes (iSteam, SteamLinx and so on), other regions (868 MHz) or newer TempoFlex firmware are
 **untested**. [docs/REVERSE-ENGINEERING.md](docs/REVERSE-ENGINEERING.md) explains how to check a
-different remote with a $40 SDR.
+different remote with an inexpensive RTL-SDR.
 
 ## What you need
 
@@ -54,7 +54,7 @@ different remote with a $40 SDR.
 | **USB power adapter** | Any 5 V phone charger. The bridge stays plugged in |
 | **3D-printed case** (optional) | I used [Heltec LoRa 32 case for Meshtastic](https://www.printables.com/model/118750-heltec-lora-32-case-for-meshtastic). PETG holds up better than PLA |
 | **A computer** | Linux, macOS or Windows, for the first flash over USB |
-| **Home Assistant** | With the ESPHome integration (built in) |
+| **Home Assistant** | A recent version, with the ESPHome integration (built in) |
 
 Optional, only to investigate a *different* remote: an RTL-SDR such as the **NooElec NESDR Smart
 v5**. You don't need it for the TempoFlex, because the protocol is already decoded.
@@ -92,8 +92,9 @@ Install [uv](https://docs.astral.sh/uv/getting-started/installation/), which run
 separate install:
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh     # macOS / Linux
-uvx esphome version                                 # downloads ESPHome on first run
+curl -LsSf https://astral.sh/uv/install.sh | sh                  # macOS / Linux
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"       # Windows
+uvx esphome version                                              # downloads ESPHome on first run
 ```
 
 On **Linux**, your user needs access to serial ports: the `uucp` group on Arch, `dialout` on
@@ -115,6 +116,9 @@ openssl rand -base64 32     # paste as api_key
 openssl rand -hex 16        # paste as ota_password
 ```
 
+No `openssl` (for example on Windows)? Use
+`python -c "import secrets, base64; print(base64.b64encode(secrets.token_bytes(32)).decode()); print(secrets.token_hex(16))"`.
+
 Edit `secrets.yaml` with your **2.4 GHz** Wi-Fi name and password and the two values above. Leave
 `steam_pairing.h` as all zeros for now: that's **listen-only mode**, and the bridge won't transmit.
 
@@ -126,8 +130,9 @@ Plug the board into your computer and flash it:
 uvx esphome run steam-bridge.yaml
 ```
 
-Choose the USB serial port when asked (`/dev/ttyUSB0` on Linux; on macOS, a `cu.usbserial` or
-`cu.SLAB` device). The first build takes a few minutes. If the upload can't connect: hold **PRG**,
+Choose the USB serial port when asked (`/dev/ttyUSB0` on Linux, a `COM` port on Windows, a
+`cu.usbserial` or `cu.SLAB` device on macOS). The board's USB chip is a Silicon Labs CP2102; if no
+port appears and your cable is fine, install Silicon Labs' CP210x driver. The first build takes a few minutes. If the upload can't connect: hold **PRG**,
 tap **RST**, release **PRG**, and try again.
 
 ### 6. Pair with your remote
@@ -222,8 +227,8 @@ preheat and a "preheat done, wake the remote" phone notification.
   Raise the cap carefully.
 - **Waking the remote gives control back to it.** From then on, the real thermostat and the
   remote's timer apply.
-- The generator's own safety features (its timer, high-limit cutoff and low-water protection) are
-  unaffected. The bridge only sends what the remote would send.
+- Whatever safety features your generator has are unaffected. The bridge only sends commands the
+  remote itself sends, and nothing reaches the generator except through the Dongle.
 - Don't run steam unattended or with anyone inside who can't easily get out.
 
 ## Settings
