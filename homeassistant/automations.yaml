@@ -1,0 +1,38 @@
+# Example automations. Paste into automations.yaml, or recreate them in the UI
+# (Settings -> Automations -> Create -> Edit in YAML). Replace notify.mobile_app_YOUR_PHONE with
+# your phone's notify service.
+
+# 1. Preheat on a schedule (weekday mornings). The bridge turns the steam off by itself after its
+#    keep-alive cap (default 10 min) unless someone wakes the remote and takes over.
+- alias: "Steam shower: weekday preheat"
+  triggers:
+    - trigger: time
+      at: "06:20:00"
+  conditions:
+    - condition: time
+      weekday: [mon, tue, wed, thu, fri]
+  actions:
+    - action: switch.turn_on
+      target:
+        entity_id: switch.steam_bridge_steam
+  mode: single
+
+# 2. Tell me the preheat is nearly done, so I can go in and wake the remote before the bridge
+#    turns the steam off. 9 minutes = one minute before the default 10-minute cap.
+- alias: "Steam shower: preheat ready"
+  triggers:
+    - trigger: state
+      entity_id: switch.steam_bridge_steam
+      to: "on"
+      for: "00:09:00"
+  conditions:
+    # Skip if someone is already using the remote (the remote owns the session).
+    - condition: state
+      entity_id: binary_sensor.steam_bridge_remote_active
+      state: "off"
+  actions:
+    - action: notify.mobile_app_YOUR_PHONE
+      data:
+        title: Steam shower
+        message: "Preheated. Wake the remote within a minute to keep it running."
+  mode: single

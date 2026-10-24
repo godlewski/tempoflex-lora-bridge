@@ -1,0 +1,10 @@
+# Your values: never commit these
+esphome/secrets.yaml
+esphome/steam_pairing.h
+
+# ESPHome build output
+esphome/.esphome/
+
+# Radio recordings can be large and identify your devices
+*.cu8
+*.iq

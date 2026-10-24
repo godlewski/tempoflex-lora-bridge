@@ -1,0 +1,56 @@
+# Steam shower card: standard Home Assistant cards only (no custom cards needed).
+# Dashboard -> edit -> Add card -> Manual, then paste this.
+# Entity IDs assume the default device name "steam-bridge".
+type: vertical-stack
+cards:
+  - type: tile
+    entity: switch.steam_bridge_steam
+    name: Steam
+    icon: mdi:weather-fog
+    color: red
+    icon_tap_action:
+      action: toggle
+  - type: grid
+    columns: 2
+    square: false
+    cards:
+      - type: tile
+        entity: number.steam_bridge_temperature_setpoint
+        name: Setpoint
+        features:
+          - type: numeric-input
+            style: buttons
+      - type: tile
+        entity: number.steam_bridge_duration
+        name: Duration
+        features:
+          - type: numeric-input
+            style: buttons
+      - type: tile
+        entity: sensor.steam_bridge_room_temperature
+        name: Room
+        color: orange
+      - type: tile
+        entity: sensor.steam_bridge_time_remaining
+        name: Remaining
+  - type: markdown
+    content: >-
+      **Steam** from here is a preheat: it runs up to 10 minutes on its own. Wake the remote when
+      you go in and it takes over with its own thermostat and timer. Room temperature comes from
+      the remote, so it only updates while the remote is awake.
+  - type: history-graph
+    hours_to_show: 3
+    entities:
+      - entity: sensor.steam_bridge_room_temperature
+        name: Room
+      - entity: switch.steam_bridge_steam
+        name: Steam
+      - entity: binary_sensor.steam_bridge_remote_active
+        name: Remote
+  - type: glance
+    show_state: true
+    entities:
+      - entity: binary_sensor.steam_bridge_dongle_connected
+        name: Dongle
+      - entity: sensor.steam_bridge_dongle_signal
+        name: Signal

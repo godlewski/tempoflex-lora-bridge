@@ -1,0 +1,18 @@
+#pragma once
+// Copy to steam_pairing.h (gitignored) BEFORE the first build:
+//
+//   cp steam_pairing.h.template steam_pairing.h
+//
+// All zeros = not paired: the bridge only listens and never transmits. After the first flash, press
+// any button on your TempoFlex remote; the bridge log prints a ready-made line like
+//
+//   [steam] PAIRING: paste into steam_pairing.h: 0xA5, 0x5A, 0x.., ...
+//
+// Replace the zeros below with those 26 bytes, then flash again. They are your remote's address and
+// your Dongle's address (both contain the devices' serial numbers), so keep this file out of git.
+#include <cstdint>
+
+static const uint8_t STEAM_PAIRING[26] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};

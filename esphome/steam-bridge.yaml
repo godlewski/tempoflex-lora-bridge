@@ -1,0 +1,338 @@
+# Mr. Steam TempoFlex <-> Home Assistant LoRa bridge
+# Board: Heltec WiFi LoRa 32 V3 (ESP32-S3 + SX1262), 915 MHz version.
+# Setup: README.md. Protocol: docs/PROTOCOL.md.
+#
+# ATTACH THE ANTENNA BEFORE THE BOARD EVER GETS POWER.
+#
+#   cp secrets.yaml.template secrets.yaml           # then fill it in
+#   cp steam_pairing.h.template steam_pairing.h     # zeros = listen-only until you pair
+#   uvx esphome run steam-bridge.yaml               # first flash over USB, over Wi-Fi afterwards
+#   uvx esphome logs steam-bridge.yaml              # watch packets
+#
+# SAFETY: the TempoFlex remote is the thermostat. Its polls carry the room temperature, and the
+# Dongle shuts the steam off a minute or two after polls stop. When this bridge starts the steam it
+# has to keep polling, and it has no temperature sensor, so it reports a FIXED 77 F: the generator
+# never sees the room warm up. That's why the bridge's own run time is capped (keepalive_max_min);
+# at the cap it sends OFF itself. As soon as the real remote is heard (someone woke it), the bridge
+# hands off: it stops polling and the remote's real thermostat and timer take over.
+
+substitutions:
+  name: steam-bridge
+  friendly_name: Steam Bridge
+  keepalive_max_min: "10"     # longest the bridge alone keeps the steam on ("preheat")
+  setpoint_min_f: "80"
+  setpoint_max_f: "120"       # the range your remote allows; check yours
+  tx_power_dbm: "3"           # plenty indoors; raise (max 22) only if the Dongle misses commands
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  includes:
+    - steam_pairing.h
+    - steam_protocol.h
+  on_boot:
+    priority: -100
+    then:
+      - delay: 5s
+      - script.execute: send_poll   # learn the current state
+
+esp32:
+  board: heltec_wifi_lora_32_V3
+  framework:
+    type: esp-idf
+
+logger:
+  level: DEBUG
+  hardware_uart: UART0        # the V3's USB-C port is a CP2102 on UART0, not the S3's native USB
+
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+spi:
+  clk_pin: GPIO9
+  mosi_pin: GPIO10
+  miso_pin: GPIO11
+
+sx126x:
+  id: radio
+  hw_version: sx1262
+  cs_pin: GPIO8
+  rst_pin: GPIO12
+  busy_pin: GPIO13
+  dio1_pin: GPIO14
+  rf_switch: true             # the V3 drives its RF switch from DIO2
+  tcxo_voltage: 1_8V
+  tcxo_delay: 5ms
+  frequency: 915MHz
+  modulation: LORA
+  bandwidth: 125_0kHz
+  spreading_factor: 7
+  coding_rate: CR_4_5
+  sync_value: [0x14, 0x24]    # LoRa sync word 0x12 in SX126x form
+  preamble_size: 8
+  crc_enable: true
+  rx_start: true
+  pa_power: ${tx_power_dbm}
+  on_packet:
+    then:
+      - lambda: |-
+          char hex[2 * steam::FRAME_LEN + 1];
+          ESP_LOGD("steam", "rx rssi=%.1f snr=%.1f %s", rssi, snr, format_hex_to(hex, x));
+          if (steam::is_remote(x)) {
+            if (!steam::paired() && !id(pairing_logged)) {
+              // Print the 26 header bytes in C form, ready to paste into steam_pairing.h.
+              std::string line;
+              char b[7];
+              for (size_t i = 0; i < steam::HEADER_LEN; i++) {
+                snprintf(b, sizeof(b), "0x%02X, ", x[i]);
+                line += b;
+              }
+              ESP_LOGW("steam", "PAIRING: paste into steam_pairing.h: %s", line.c_str());
+              id(pairing_logged) = true;
+            }
+            // Handoff: the real remote is awake, so it (and its thermostat) owns the steam now.
+            id(remote_last_seen) = millis();
+            if (id(keepalive_start) != 0) {
+              ESP_LOGI("steam", "Remote is active; handing off, keep-alive stopped");
+              id(keepalive_start) = 0;
+            }
+            float f;
+            if (steam::remote_room_temp(x, f) && id(room_temp).state != f)
+              id(room_temp).publish_state(f);
+            return;
+          }
+          steam::Status s;
+          if (!steam::parse_status(x, s))
+            return;
+          id(last_rssi).publish_state(rssi);
+          id(dongle_last_seen) = millis();
+          id(steam_on) = s.steam;
+          id(setpoint_raw) = s.setpoint_raw;
+          id(duration_min) = s.duration;
+          if (id(steam_switch).state != s.steam) id(steam_switch).publish_state(s.steam);
+          float f = steam::raw_to_f(s.setpoint_raw);
+          if (id(setpoint).state != f) id(setpoint).publish_state(f);
+          if (id(duration).state != s.duration) id(duration).publish_state(s.duration);
+          if (id(remaining).state != s.remaining) id(remaining).publish_state(s.remaining);
+          // The Dongle's reply to a command reports the state from before it, hence the grace period.
+          if (!s.steam && id(keepalive_start) != 0 && millis() - id(keepalive_start) > 5000) {
+            ESP_LOGI("steam", "Dongle reports steam OFF; keep-alive stopped");
+            id(keepalive_start) = 0;
+          }
+
+globals:
+  - id: keepalive_start
+    type: uint32_t
+    initial_value: "0"        # millis() when the bridge's own keep-alive began; 0 = inactive
+  - id: dongle_last_seen
+    type: uint32_t
+    initial_value: "0"
+  - id: remote_last_seen
+    type: uint32_t
+    initial_value: "0"
+  - id: pairing_logged
+    type: bool
+    initial_value: "false"
+  - id: steam_on
+    type: bool
+    initial_value: "false"
+  - id: setpoint_raw
+    type: uint16_t
+    initial_value: "880"      # 120 F until the Dongle reports its real setting
+  - id: duration_min
+    type: uint16_t
+    initial_value: "20"
+  - id: cmd_frame
+    type: std::vector<uint8_t>
+
+script:
+  # Send a command the way the remote does: twice, then a status poll (the Dongle's reply to the
+  # poll is the first one that reflects the change). Queued so commands never overlap on air.
+  - id: send_command
+    mode: queued
+    max_runs: 8
+    parameters:
+      payload: int[]
+    then:
+      - if:
+          condition:
+            lambda: return steam::paired();
+          then:
+            - lambda: |-
+                std::vector<uint8_t> p(payload.begin(), payload.end());
+                id(cmd_frame) = steam::frame(p);
+                id(radio).transmit_packet(id(cmd_frame));
+            - delay: 550ms
+            - lambda: id(radio).transmit_packet(id(cmd_frame));
+            - delay: 900ms
+            - script.execute: send_poll
+          else:
+            - logger.log:
+                level: WARN
+                tag: steam
+                format: "Not paired yet: press a button on the remote and follow README step 6"
+  - id: send_poll
+    then:
+      - lambda: |-
+          if (!steam::paired())
+            return;
+          uint16_t t = steam::f_to_raw(77.0f);   // fixed room temperature, see SAFETY above
+          id(radio).transmit_packet(steam::frame({steam::CMD_POLL, (uint8_t) (t >> 8), (uint8_t) t}));
+  - id: start_steam
+    then:
+      - logger.log: "Steam ON; keep-alive for ${keepalive_max_min} min"
+      - script.execute:
+          id: send_command
+          payload: !lambda |-
+            return std::vector<int>{steam::CMD_STEAM, 0x00, 0x01, id(duration_min) >> 8,
+                                    id(duration_min) & 0xFF, id(setpoint_raw) >> 8, id(setpoint_raw) & 0xFF};
+      - lambda: if (steam::paired()) id(keepalive_start) = millis() | 1;
+  - id: stop_steam
+    then:
+      - lambda: id(keepalive_start) = 0;
+      - logger.log: "Steam OFF; keep-alive stopped"
+      - script.execute:
+          id: send_command
+          payload: !lambda |-
+            return std::vector<int>{steam::CMD_STEAM, 0x00, 0x00, id(duration_min) >> 8,
+                                    id(duration_min) & 0xFF, id(setpoint_raw) >> 8, id(setpoint_raw) & 0xFF};
+
+interval:
+  # Keep the Dongle's fail-safe fed while the bridge owns the steam, up to the cap.
+  - interval: 2500ms
+    then:
+      - if:
+          condition:
+            lambda: return id(keepalive_start) != 0 && millis() - id(keepalive_start) >= ${keepalive_max_min}UL * 60000UL;
+          then:
+            - logger.log: "Keep-alive cap reached"
+            - script.execute: stop_steam
+          else:
+            - if:
+                condition:
+                  lambda: return id(keepalive_start) != 0 && !id(send_command).is_running();
+                then:
+                  - script.execute: send_poll
+  # Idle refresh so HA notices changes made at the remote and a missing Dongle. Skipped while the
+  # steam is on, so the fixed 77 F never competes with the real remote's thermostat readings.
+  - interval: 2min
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return id(keepalive_start) == 0 && !id(steam_on) &&
+                     (id(remote_last_seen) == 0 || millis() - id(remote_last_seen) > 60000);
+          then:
+            - script.execute: send_poll
+
+switch:
+  - platform: template
+    id: steam_switch
+    name: "Steam"
+    restore_mode: DISABLED    # the default (ALWAYS_OFF) would send OFF at every boot
+    icon: mdi:weather-fog
+    turn_on_action:
+      - script.execute: start_steam
+    turn_off_action:
+      - script.execute: stop_steam
+
+number:
+  - platform: template
+    id: setpoint
+    name: "Temperature setpoint"
+    icon: mdi:thermometer
+    unit_of_measurement: "°F"
+    min_value: ${setpoint_min_f}
+    max_value: ${setpoint_max_f}
+    step: 1
+    set_action:
+      - lambda: id(setpoint_raw) = steam::f_to_raw(x);
+      - script.execute:
+          id: send_command
+          payload: !lambda "return std::vector<int>{steam::CMD_TEMP, id(setpoint_raw) >> 8, id(setpoint_raw) & 0xFF};"
+  - platform: template
+    id: duration
+    name: "Duration"
+    icon: mdi:timer-outline
+    unit_of_measurement: min
+    min_value: 1
+    max_value: 60
+    step: 1
+    set_action:
+      - lambda: id(duration_min) = (uint16_t) x;
+      - script.execute:
+          id: send_command
+          payload: !lambda "return std::vector<int>{steam::CMD_DURATION, 0x00, (int) x};"
+
+sensor:
+  - platform: template
+    id: room_temp
+    name: "Room temperature"
+    device_class: temperature
+    state_class: measurement
+    unit_of_measurement: "°F"
+    accuracy_decimals: 1
+    filters:
+      - throttle: 30s         # the remote polls up to ~3x a second
+  - platform: template
+    id: remaining
+    name: "Time remaining"
+    icon: mdi:timer-sand
+    unit_of_measurement: min
+    accuracy_decimals: 0
+  - platform: template
+    id: last_rssi
+    name: "Dongle signal"
+    unit_of_measurement: dBm
+    device_class: signal_strength
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    filters:
+      - throttle: 60s
+
+binary_sensor:
+  - platform: template
+    name: "Dongle connected"
+    device_class: connectivity
+    entity_category: diagnostic
+    lambda: return id(dongle_last_seen) != 0 && millis() - id(dongle_last_seen) < 5UL * 60000UL;
+  - platform: template
+    name: "Remote active"
+    icon: mdi:remote
+    lambda: return id(remote_last_seen) != 0 && millis() - id(remote_last_seen) < 30000;
+  # The board's PRG button toggles the steam (handy for testing). GPIO0 is also a boot-strap pin
+  # that a USB serial reset pulls low, so "clicks" in the first 10 s after boot are ignored.
+  - platform: gpio
+    id: prg_button
+    pin:
+      number: GPIO0
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    on_click:
+      - min_length: 50ms
+        max_length: 1s
+        then:
+          - if:
+              condition:
+                lambda: return millis() < 10000;
+              then:
+                - logger.log: "PRG click during boot ignored"
+              else:
+                - if:
+                    condition:
+                      lambda: return id(steam_on) || id(keepalive_start) != 0;
+                    then:
+                      - script.execute: stop_steam
+                    else:
+                      - script.execute: start_steam
