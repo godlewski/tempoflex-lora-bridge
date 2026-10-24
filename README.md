@@ -95,7 +95,7 @@ Debian/Ubuntu (`sudo usermod -aG dialout $USER`, then log out and back in).
 ### 3. Get the code
 
 ```bash
-git clone https://github.com/<you>/tempoflex-lora-bridge.git
+git clone https://github.com/godlewski/tempoflex-lora-bridge.git
 cd tempoflex-lora-bridge/esphome
 ```
 
