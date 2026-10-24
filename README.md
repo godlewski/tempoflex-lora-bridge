@@ -14,7 +14,8 @@ steam generator.
 - **Hand off to the real remote.** Walk in, wake the remote, and it takes over with its own
   thermostat and timer.
 - **See what's happening.** Steam on/off, minutes remaining, setpoint and duration, plus the room
-  temperature the remote measures, even in sessions you started at the remote.
+  temperature the remote measures, even in sessions you started at the remote. All of it is in Home
+  Assistant and on the board's own little screen.
 
 > [!NOTE]
 > **Built with AI.** I worked out this protocol and wrote the firmware and these docs together with
@@ -150,10 +151,25 @@ These bytes are your remote's and Dongle's addresses. They contain the devices' 
 
 ### 7. Test at the bridge
 
-The board's **PRG** button (one of the two tiny buttons next to USB-C; the other is **RST**,
-which reboots) toggles the steam. Tap it, and within a few seconds the generator should start; the
-remote shows ON when you wake it. Tap again to turn it off. The log shows each command and the
-Dongle's reply.
+The board has two tiny buttons next to USB-C: **PRG** and **RST** (RST reboots). **Hold PRG for
+3 seconds** to toggle the steam. Within a few seconds the generator should start, and the remote
+shows ON when you wake it. Hold PRG for 3 seconds again to turn it off. The screen's Activity page
+and the log show each command and the Dongle's reply.
+
+### The screen
+
+The OLED cycles through three pages every 4 seconds. **Tap PRG** to go to the next page yourself
+(auto-cycling pauses for 30 s).
+
+| Page | Shows |
+|---|---|
+| **Status** | STEAM ON / OFF, minutes left, setpoint and duration, room temperature, and who's in control (BRIDGE or REMOTE) |
+| **Link** | Dongle signal and when it last answered, remote activity, preheat time left, Wi-Fi signal |
+| **Activity** | The last 5 events: what the bridge sent (`TX …`), what the remote sent (`RX remote: …`), handoffs, the preheat cap |
+
+After any event, the Activity page shows for a few seconds. The screen turns off after
+`display_sleep_min` (default 10 minutes) with nothing happening, to avoid OLED burn-in. It wakes on
+any activity or a PRG tap. Switch on **Display always on** in Home Assistant to keep it lit.
 
 ### 8. Add it to Home Assistant
 
@@ -179,6 +195,8 @@ never changes.
 | `binary_sensor.steam_bridge_remote_active` | Someone is using the remote |
 | `binary_sensor.steam_bridge_dongle_connected` | The Dongle answered in the last 5 minutes (diagnostic) |
 | `sensor.steam_bridge_dongle_signal` | Dongle signal strength (diagnostic) |
+| `sensor.steam_bridge_wi_fi_signal` | The bridge's Wi-Fi signal (diagnostic) |
+| `switch.steam_bridge_display_always_on` | Keep the OLED on instead of letting it sleep (config) |
 
 **Dashboard:** [homeassistant/dashboard-card.yaml](homeassistant/dashboard-card.yaml) is a card
 built only from standard Home Assistant cards. Add a card, choose *Manual*, and paste it in.
@@ -218,6 +236,7 @@ again:
 | `keepalive_max_min` | `10` | Longest the bridge alone keeps the steam on |
 | `setpoint_min_f` / `setpoint_max_f` | `80` / `120` | Setpoint range shown in Home Assistant; match your remote's |
 | `tx_power_dbm` | `3` | Transmit power. 3 dBm was plenty from another room; the maximum is 22 |
+| `display_sleep_min` | `10` | Minutes of inactivity before the screen turns off |
 | `name` / `friendly_name` | `steam-bridge` / `Steam Bridge` | Device name; also changes the entity IDs |
 
 ## Troubleshooting
@@ -231,6 +250,7 @@ again:
 | Steam turns on, then stops after a minute or two | That's the Dongle's fail-safe when polls stop. Make sure you're on this firmware; the bridge keeps polling up to the cap |
 | `Dongle connected` is off | The bridge is out of range or the generator has no power. Move the bridge closer or raise `tx_power_dbm` |
 | Pressing the board's buttons does nothing | You pressed **RST** (reboots). **PRG** is the other one. PRG is also ignored for 10 s after boot |
+| Screen stays blank | It sleeps after 10 min of inactivity; tap PRG. If it never lights, check the log for `Found device at address 0x3C`. The V3 powers its OLED through GPIO36 ("Vext"), which the firmware switches on before the I2C bus starts |
 
 ## For AI agents
 
@@ -242,6 +262,7 @@ exact steps, which values must come from the person, and which actions need thei
 ```
 esphome/steam-bridge.yaml          ESPHome firmware config (no personal values)
 esphome/steam_protocol.h           frame building and parsing
+esphome/steam_ui.h                 OLED event list and helpers
 esphome/steam_pairing.h.template   -> steam_pairing.h, your remote's 26-byte header
 esphome/secrets.yaml.template      -> secrets.yaml, Wi-Fi and keys
 homeassistant/                     dashboard card and example automations

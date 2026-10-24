@@ -41,8 +41,8 @@ file tells you how to run it safely.
    again. Over Wi-Fi is fine now: `--device <bridge IP>`.
 8. **Verify listening.** Within a couple of minutes the log should show Dongle `rx` frames (the
    bridge polls at boot and every 2 minutes while idle), and `Dongle connected` should turn on.
-9. **Verify control (ask first).** With the person watching the shower, ask them to tap PRG, or
-   toggle the switch from Home Assistant. Confirm from the log that the Dongle reports steam on, ask
+9. **Verify control (ask first).** With the person watching the shower, ask them to **hold PRG for
+   3 seconds** (a tap only changes the screen page), or toggle the switch from Home Assistant. Confirm from the log that the Dongle reports steam on, ask
    them whether steam is flowing, then turn it off the same way.
 10. **Home Assistant.** Follow [README → Home Assistant](README.md#home-assistant). If HA doesn't
     discover the bridge, add it by IP, and suggest a DHCP reservation.
@@ -54,10 +54,13 @@ file tells you how to run it safely.
 | `rx rssi=… a55a…` | A received frame (debug). Byte 26 = N; `13` = Dongle status |
 | `PAIRING: paste into steam_pairing.h: …` | First remote frame while unpaired |
 | `Not paired yet` | A command was requested before pairing; nothing was sent |
-| `Steam ON; keep-alive for N min` | The bridge started the steam and is polling |
-| `Remote is active; handing off` | The real remote took over; the bridge stopped polling |
-| `Keep-alive cap reached` | The bridge sent OFF at the cap |
-| `Dongle reports steam OFF; keep-alive stopped` | Steam turned off elsewhere (remote or timer) |
+| `Preheat N min` | The bridge started the steam and is polling |
+| `TX steam ON` / `TX set temp` … | The bridge sent a command |
+| `RX remote: steam ON` … | The real remote sent a command |
+| `Remote took over` | The real remote is active; the bridge stopped polling |
+| `Preheat cap reached` | The bridge sent OFF at the cap |
+| `Dongle: steam ON` / `OFF` | The Dongle's reported state changed |
+| `Keep-alive stopped` | Steam turned off elsewhere (remote or timer) |
 
 Decode frames with [docs/PROTOCOL.md](docs/PROTOCOL.md). The Dongle's status bytes follow N at
 offset 27.

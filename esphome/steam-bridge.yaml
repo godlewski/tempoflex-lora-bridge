@@ -23,6 +23,7 @@ substitutions:
   setpoint_min_f: "80"
   setpoint_max_f: "120"       # the range your remote allows; check yours
   tx_power_dbm: "3"           # plenty indoors; raise (max 22) only if the Dongle misses commands
+  display_sleep_min: "10"     # OLED turns off after this long with nothing happening (burn-in)
 
 esphome:
   name: ${name}
@@ -30,15 +31,19 @@ esphome:
   includes:
     - steam_pairing.h
     - steam_protocol.h
+    - steam_ui.h
   on_boot:
-    priority: -100
-    then:
-      - delay: 5s
-      - if:                         # learn the current state, unless the remote is already polling
-          condition:
-            lambda: return id(remote_last_seen) == 0;
-          then:
-            - script.execute: send_poll
+    - priority: 1100            # power the OLED (Vext) before the I2C bus and display start
+      then:
+        - lambda: steam_ui::vext_on();
+    - priority: -100
+      then:
+        - delay: 5s
+        - if:                       # learn the current state, unless the remote is already polling
+            condition:
+              lambda: return id(remote_last_seen) == 0;
+            then:
+              - script.execute: send_poll
 
 esp32:
   board: heltec_wifi_lora_32_V3
@@ -106,8 +111,11 @@ sx126x:
             }
             // Handoff: the real remote is awake, so it (and its thermostat) owns the steam now.
             id(remote_last_seen) = millis();
+            steam_ui::touch();
+            if (x[27] != steam::CMD_POLL)
+              steam_ui::note("RX remote: " + steam_ui::command_name(x[27], x[26] > 3 ? x[29] : 0));
             if (id(keepalive_start) != 0) {
-              ESP_LOGI("steam", "Remote is active; handing off, keep-alive stopped");
+              steam_ui::note("Remote took over");
               id(keepalive_start) = 0;
             }
             float f;
@@ -120,7 +128,10 @@ sx126x:
             return;
           id(last_rssi).publish_state(rssi);
           id(dongle_last_seen) = millis();
+          if (id(steam_on) != s.steam)
+            steam_ui::note(s.steam ? "Dongle: steam ON" : "Dongle: steam OFF");
           id(steam_on) = s.steam;
+          id(remaining_min) = s.remaining;
           id(setpoint_raw) = s.setpoint_raw;
           id(duration_min) = s.duration;
           if (id(steam_switch).state != s.steam) id(steam_switch).publish_state(s.steam);
@@ -130,7 +141,7 @@ sx126x:
           if (id(remaining).state != s.remaining) id(remaining).publish_state(s.remaining);
           // The Dongle's reply to a command reports the state from before it, hence the grace period.
           if (!s.steam && id(keepalive_start) != 0 && millis() - id(keepalive_start) > 5000) {
-            ESP_LOGI("steam", "Dongle reports steam OFF; keep-alive stopped");
+            steam_ui::note("Keep-alive stopped");
             id(keepalive_start) = 0;
           }
 
@@ -156,6 +167,15 @@ globals:
   - id: duration_min
     type: uint16_t
     initial_value: "20"
+  - id: remaining_min
+    type: uint16_t
+    initial_value: "0"
+  - id: screen_on
+    type: bool
+    initial_value: "true"
+  - id: manual_page_until
+    type: uint32_t
+    initial_value: "0"        # PRG paused the page cycling until this millis()
   - id: cmd_frame
     type: std::vector<uint8_t>
 
@@ -174,6 +194,7 @@ script:
           then:
             - lambda: |-
                 std::vector<uint8_t> p(payload.begin(), payload.end());
+                steam_ui::note("TX " + steam_ui::command_name(p[0], p.size() > 2 ? p[2] : 0));
                 id(cmd_frame) = steam::frame(p);
                 id(radio).transmit_packet(id(cmd_frame));
             - delay: 550ms
@@ -185,6 +206,7 @@ script:
                 level: WARN
                 tag: steam
                 format: "Not paired yet: press a button on the remote and follow README step 6"
+            - lambda: 'steam_ui::note("Not paired: nothing sent");'
   - id: send_poll
     then:
       - lambda: |-
@@ -194,7 +216,7 @@ script:
           id(radio).transmit_packet(steam::frame({steam::CMD_POLL, (uint8_t) (t >> 8), (uint8_t) t}));
   - id: start_steam
     then:
-      - logger.log: "Steam ON; keep-alive for ${keepalive_max_min} min"
+      - lambda: 'steam_ui::note("Preheat ${keepalive_max_min} min");'
       - script.execute:
           id: send_command
           payload: !lambda |-
@@ -204,7 +226,7 @@ script:
   - id: stop_steam
     then:
       - lambda: id(keepalive_start) = 0;
-      - logger.log: "Steam OFF; keep-alive stopped"
+      - lambda: 'steam_ui::note("Bridge: steam off");'
       - script.execute:
           id: send_command
           payload: !lambda |-
@@ -212,6 +234,29 @@ script:
                                     id(duration_min) & 0xFF, id(setpoint_raw) >> 8, id(setpoint_raw) & 0xFF};
 
 interval:
+  # Screen: jump to Activity right after an event, otherwise cycle pages; sleep when idle.
+  - interval: 4s
+    then:
+      - lambda: |-
+          bool busy = id(steam_on) || id(keepalive_start) != 0 || !steam::paired() ||
+                      millis() - steam_ui::last_activity() < ${display_sleep_min}UL * 60000UL;
+          bool want = busy || id(display_always_on).state;
+          if (want != id(screen_on)) {
+            if (want) id(oled).turn_on(); else id(oled).turn_off();
+            id(screen_on) = want;
+          }
+      - if:
+          condition:
+            lambda: return millis() < id(manual_page_until);
+          then: []                # someone picked a page with PRG; leave it
+          else:
+            - if:
+                condition:
+                  lambda: return millis() - steam_ui::last_event() < 6000;
+                then:
+                  - display.page.show: page_activity
+                else:
+                  - display.page.show_next: oled
   # Keep the Dongle's fail-safe fed while the bridge owns the steam, up to the cap.
   - interval: 2500ms
     then:
@@ -219,7 +264,7 @@ interval:
           condition:
             lambda: return id(keepalive_start) != 0 && millis() - id(keepalive_start) >= ${keepalive_max_min}UL * 60000UL;
           then:
-            - logger.log: "Keep-alive cap reached"
+            - lambda: 'steam_ui::note("Preheat cap reached");'
             - script.execute: stop_steam
           else:
             - if:
@@ -240,6 +285,13 @@ interval:
             - script.execute: send_poll
 
 switch:
+  - platform: template
+    id: display_always_on
+    name: "Display always on"
+    icon: mdi:monitor
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
   - platform: template
     id: steam_switch
     name: "Steam"
@@ -279,6 +331,11 @@ number:
           payload: !lambda "return std::vector<int>{steam::CMD_DURATION, 0x00, (int) x};"
 
 sensor:
+  - platform: wifi_signal
+    id: wifi_rssi
+    name: "Wi-Fi signal"
+    entity_category: diagnostic
+    update_interval: 60s
   - platform: template
     id: room_temp
     name: "Room temperature"
@@ -314,8 +371,9 @@ binary_sensor:
     name: "Remote active"
     icon: mdi:remote
     lambda: return id(remote_last_seen) != 0 && millis() - id(remote_last_seen) < 30000;
-  # The board's PRG button toggles the steam (handy for testing). GPIO0 is also a boot-strap pin
-  # that a USB serial reset pulls low, so "clicks" in the first 10 s after boot are ignored.
+  # The board's PRG button: tap = next screen page (and wake the screen), hold 3 s = toggle the
+  # steam (for testing at the bridge). GPIO0 is also a boot-strap pin that a USB serial reset pulls
+  # low, so presses in the first 10 s after boot are ignored.
   - platform: gpio
     id: prg_button
     pin:
@@ -330,9 +388,22 @@ binary_sensor:
         then:
           - if:
               condition:
+                lambda: return millis() >= 10000;
+              then:
+                - lambda: |-
+                    id(manual_page_until) = millis() + 30000;
+                    steam_ui::touch();
+                    if (!id(screen_on)) { id(oled).turn_on(); id(screen_on) = true; }
+                - display.page.show_next: oled
+                - component.update: oled
+      - min_length: 3s
+        max_length: 8s
+        then:
+          - if:
+              condition:
                 lambda: return millis() < 10000;
               then:
-                - logger.log: "PRG click during boot ignored"
+                - logger.log: "PRG hold during boot ignored"
               else:
                 - if:
                     condition:
@@ -341,3 +412,90 @@ binary_sensor:
                       - script.execute: stop_steam
                     else:
                       - script.execute: start_steam
+
+# ---- OLED status screen (Heltec V3: SSD1306 128x64 on I2C, powered through Vext) ----------------
+# Pages cycle every 4 s: Status, Link, Activity. After any event the Activity page shows for a few
+# seconds. The screen sleeps after display_sleep_min of nothing happening, unless "Display always
+# on" is switched on in Home Assistant.
+
+i2c:
+  sda: GPIO17
+  scl: GPIO18
+  frequency: 400kHz
+
+font:
+  - file: "gfonts://Roboto Condensed"
+    id: font_small
+    size: 11
+    glyphsets: [GF_Latin_Core]
+  - file: "gfonts://Roboto Condensed@700"
+    id: font_big
+    size: 20
+    glyphsets: [GF_Latin_Core]
+
+display:
+  - platform: ssd1306_i2c
+    id: oled
+    model: SSD1306 128x64
+    address: 0x3C
+    reset_pin: GPIO21
+    contrast: 60%
+    update_interval: 1s
+    pages:
+      - id: page_status
+        lambda: |-
+          const char *owner = id(keepalive_start) != 0 ? "BRIDGE"
+                              : (id(remote_last_seen) != 0 && millis() - id(remote_last_seen) < 30000) ? "REMOTE" : "";
+          it.printf(0, 0, id(font_small), "Steam");
+          it.printf(127, 0, id(font_small), TextAlign::TOP_RIGHT, "%s", owner);
+          if (!steam::paired()) {
+            it.printf(64, 14, id(font_big), TextAlign::TOP_CENTER, "NOT PAIRED");
+            it.printf(64, 40, id(font_small), TextAlign::TOP_CENTER, "Press a button on");
+            it.printf(64, 52, id(font_small), TextAlign::TOP_CENTER, "the remote (README 6)");
+            return;
+          }
+          it.printf(64, 13, id(font_big), TextAlign::TOP_CENTER, id(steam_on) ? "STEAM ON" : "STEAM OFF");
+          if (id(steam_on))
+            it.printf(64, 35, id(font_small), TextAlign::TOP_CENTER, "%u min left", id(remaining_min));
+          it.printf(0, 52, id(font_small), "Set %.0f°F  %um", steam::raw_to_f(id(setpoint_raw)), id(duration_min));
+          if (id(room_temp).has_state())
+            it.printf(127, 52, id(font_small), TextAlign::TOP_RIGHT, "Rm %.1f°", id(room_temp).state);
+      - id: page_link
+        lambda: |-
+          uint32_t now = millis();
+          it.printf(0, 0, id(font_small), "Link");
+          if (id(dongle_last_seen) != 0 && now - id(dongle_last_seen) < 5UL * 60000UL)
+            it.printf(0, 13, id(font_small), "Dongle  %.0f dBm  %s ago", id(last_rssi).state,
+                      steam_ui::ago(id(dongle_last_seen)).c_str());
+          else
+            it.printf(0, 13, id(font_small), "Dongle  no reply");
+          if (id(remote_last_seen) != 0)
+            it.printf(0, 26, id(font_small), "Remote  %s %s ago",
+                      now - id(remote_last_seen) < 30000 ? "active," : "seen", steam_ui::ago(id(remote_last_seen)).c_str());
+          else
+            it.printf(0, 26, id(font_small), "Remote  not heard yet");
+          if (id(keepalive_start) != 0) {
+            uint32_t left = ${keepalive_max_min}UL * 60UL - (now - id(keepalive_start)) / 1000;
+            it.printf(0, 39, id(font_small), "Bridge  preheat %u:%02u left", (unsigned) (left / 60), (unsigned) (left % 60));
+          } else {
+            it.printf(0, 39, id(font_small), "Bridge  idle (listening)");
+          }
+          if (id(wifi_rssi).has_state())
+            it.printf(0, 52, id(font_small), "Wi-Fi   %.0f dBm", id(wifi_rssi).state);
+          else
+            it.printf(0, 52, id(font_small), "Wi-Fi   connecting");
+      - id: page_activity
+        lambda: |-
+          it.printf(0, 0, id(font_small), "Activity");
+          auto &ev = steam_ui::events();
+          if (ev.empty()) {
+            it.printf(0, 13, id(font_small), "nothing yet");
+            return;
+          }
+          int y = 13;
+          for (auto &e : ev) {
+            if (y > 52) break;
+            it.printf(0, y, id(font_small), "%s", e.text.c_str());
+            it.printf(127, y, id(font_small), TextAlign::TOP_RIGHT, "%s", steam_ui::ago(e.at).c_str());
+            y += 13;
+          }
