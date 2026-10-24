@@ -34,7 +34,11 @@ esphome:
     priority: -100
     then:
       - delay: 5s
-      - script.execute: send_poll   # learn the current state
+      - if:                         # learn the current state, unless the remote is already polling
+          condition:
+            lambda: return id(remote_last_seen) == 0;
+          then:
+            - script.execute: send_poll
 
 esp32:
   board: heltec_wifi_lora_32_V3
@@ -88,7 +92,8 @@ sx126x:
           char hex[2 * steam::FRAME_LEN + 1];
           ESP_LOGD("steam", "rx rssi=%.1f snr=%.1f %s", rssi, snr, format_hex_to(hex, x));
           if (steam::is_remote(x)) {
-            if (!steam::paired() && !id(pairing_logged)) {
+            // Repeated every 30 s until paired, so it shows up whenever someone opens the log.
+            if (!steam::paired() && (id(pairing_logged_at) == 0 || millis() - id(pairing_logged_at) > 30000)) {
               // Print the 26 header bytes in C form, ready to paste into steam_pairing.h.
               std::string line;
               char b[7];
@@ -97,7 +102,7 @@ sx126x:
                 line += b;
               }
               ESP_LOGW("steam", "PAIRING: paste into steam_pairing.h: %s", line.c_str());
-              id(pairing_logged) = true;
+              id(pairing_logged_at) = millis() | 1;
             }
             // Handoff: the real remote is awake, so it (and its thermostat) owns the steam now.
             id(remote_last_seen) = millis();
@@ -139,9 +144,9 @@ globals:
   - id: remote_last_seen
     type: uint32_t
     initial_value: "0"
-  - id: pairing_logged
-    type: bool
-    initial_value: "false"
+  - id: pairing_logged_at
+    type: uint32_t
+    initial_value: "0"
   - id: steam_on
     type: bool
     initial_value: "false"

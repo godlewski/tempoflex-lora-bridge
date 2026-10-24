@@ -132,7 +132,8 @@ tap **RST**, release **PRG**, and try again.
 ### 6. Pair with your remote
 
 Keep the log running (`uvx esphome logs steam-bridge.yaml`), wake the TempoFlex remote and press
-any button. The bridge prints a line like:
+**power** or an **up/down arrow** (the Timer and Temperature buttons send nothing). The bridge
+prints this line, and repeats it every 30 seconds while the remote is active:
 
 ```
 [W][steam]: PAIRING: paste into steam_pairing.h: 0xA5, 0x5A, 0x.., 0x.., ...
